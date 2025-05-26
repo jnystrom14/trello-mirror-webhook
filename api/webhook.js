@@ -1,4 +1,4 @@
-const axios = require('axios');
+import axios from 'axios';
 
 // Configuration
 const API_KEY = process.env.TRELLO_API_KEY;
