@@ -116,6 +116,11 @@ async function findCopiedCards(masterCardId) {
 // Create a copied card in a specific list
 async function createCopiedCard(masterCard, label, targetList) {
   try {
+    console.log(`🔨 ATTEMPTING TO CREATE COPY:`);
+    console.log(`   Master Card: "${masterCard.name}" (${masterCard.id})`);
+    console.log(`   Target List: "${targetList.name}" (${targetList.id})`);
+    console.log(`   Label: "${label.name}"`);
+    
     const copiedCard = await trelloAPI('POST', '/cards', {
       name: masterCard.name,
       desc: `${masterCard.desc || ''}\n\n[AUTO-SYNCED FROM MASTER - MASTER_ID:${masterCard.id}]`,
@@ -124,10 +129,10 @@ async function createCopiedCard(masterCard, label, targetList) {
       pos: 'bottom'
     });
     
-    console.log(`✓ Created copy in "${label.name}" list: "${masterCard.name}"`);
+    console.log(`✅ SUCCESSFULLY CREATED copy in "${label.name}" list: "${masterCard.name}" (new ID: ${copiedCard.id})`);
     return copiedCard;
   } catch (error) {
-    console.error(`Error creating copied card:`, error.message);
+    console.error(`❌ ERROR creating copied card:`, error.message);
     return null;
   }
 }
