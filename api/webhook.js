@@ -155,7 +155,7 @@ async function deleteCopiedCard(copiedCard) {
   }
 }
 
-// Handle new card creation
+// Handle new card creation with better duplicate prevention
 async function handleCardCreation(card) {
   console.log(`🆕 New card created: "${card.name}" (ID: ${card.id})`);
   
@@ -176,16 +176,26 @@ async function handleCardCreation(card) {
   
   console.log(`   🏷️  Labels: ${fullCard.labels.map(l => l.name).join(', ')}`);
   
-  // Create a copy for each label
+  // Create a copy for each label, but double-check for duplicates
   for (const label of fullCard.labels) {
     const targetList = await getOrCreateLabelList(label.name, label.color);
     if (targetList) {
-      await createCopiedCard(fullCard, label, targetList);
+      // Double-check: make sure no copy exists in this specific list
+      const existingCardsInList = await trelloAPI('GET', `/lists/${targetList.id}/cards`);
+      const alreadyExists = existingCardsInList.some(existingCard => 
+        existingCard.desc && existingCard.desc.includes(`MASTER_ID:${card.id}`)
+      );
+      
+      if (!alreadyExists) {
+        await createCopiedCard(fullCard, label, targetList);
+      } else {
+        console.log(`⚠️  Copy already exists in "${label.name}" list - skipping`);
+      }
     }
   }
 }
 
-// Handle card updates (including label changes)
+// Handle card updates (including label changes) with better duplicate prevention
 async function handleCardUpdate(action) {
   const masterCard = action.data.card;
   console.log(`📝 Master card updated: "${masterCard.name}"`);
@@ -197,26 +207,33 @@ async function handleCardUpdate(action) {
   const existingCopies = await findCopiedCards(masterCard.id);
   console.log(`🔍 Found ${existingCopies.length} existing copied cards`);
   
-  // Update all existing copies
+  // Update all existing copies with new content
   for (const copiedCard of existingCopies) {
     await updateCopiedCard(copiedCard, fullCard);
   }
   
-  // Handle label changes: create new copies for new labels
+  // Handle label-based copying - but only create copies that don't exist
   if (fullCard.labels && fullCard.labels.length > 0) {
+    console.log(`🏷️  Current labels: ${fullCard.labels.map(l => l.name).join(', ')}`);
+    
+    // Get the list IDs where copies already exist
     const existingListIds = existingCopies.map(card => card.idList);
     
     for (const label of fullCard.labels) {
       const targetList = await getOrCreateLabelList(label.name, label.color);
-      if (targetList && !existingListIds.includes(targetList.id)) {
-        console.log(`🆕 Creating new copy for added label: ${label.name}`);
-        await createCopiedCard(fullCard, label, targetList);
+      if (targetList) {
+        // Only create copy if we don't already have one in this list
+        if (!existingListIds.includes(targetList.id)) {
+          console.log(`🆕 Creating new copy for label: ${label.name}`);
+          await createCopiedCard(fullCard, label, targetList);
+        } else {
+          console.log(`✅ Copy already exists in "${label.name}" list - skipping`);
+        }
       }
     }
+  } else {
+    console.log('⚠️  No labels found on card');
   }
-  
-  // TODO: Handle removed labels (delete copies from lists that no longer match)
-  // This is complex because we need to track which copy belongs to which label
 }
 
 // Handle card deletion
