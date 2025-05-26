@@ -1,37 +1,252 @@
-// Minimal webhook for testing
-export default async function handler(req, res) {
-  // Log everything for debugging
-  console.log('=== WEBHOOK REQUEST DEBUG ===');
-  console.log('Method:', req.method);
-  console.log('Headers:', JSON.stringify(req.headers, null, 2));
-  console.log('URL:', req.url);
-  console.log('Body:', req.body);
-  console.log('================================');
+import axios from 'axios';
 
+// Configuration
+const API_KEY = process.env.TRELLO_API_KEY;
+const TOKEN = process.env.TRELLO_TOKEN;
+const MASTER_LIST_ID = '682f02d46425bad11c50c904';
+const BOARD_ID = '681e4e49575a69d0215447fd';
+
+// Trello API helper
+async function trelloAPI(method, endpoint, data = null) {
+  const separator = endpoint.includes('?') ? '&' : '?';
+  const url = `https://api.trello.com/1${endpoint}${separator}key=${API_KEY}&token=${TOKEN}`;
+  try {
+    const response = await axios({ method, url, data });
+    return response.data;
+  } catch (error) {
+    console.error(`Trello API error: ${error.response?.status} - ${error.response?.data}`);
+    throw error;
+  }
+}
+
+// Get or create a list for a specific label
+async function getOrCreateLabelList(labelName, labelColor) {
+  try {
+    const lists = await trelloAPI('GET', `/boards/${BOARD_ID}/lists`);
+    const existingList = lists.find(list => list.name === labelName);
+    if (existingList) {
+      return existingList;
+    }
+    
+    const newList = await trelloAPI('POST', '/lists', {
+      name: labelName,
+      idBoard: BOARD_ID,
+      pos: 'bottom'
+    });
+    
+    console.log(`✨ Created new list: "${labelName}"`);
+    return newList;
+  } catch (error) {
+    console.error(`Error creating list for label "${labelName}":`, error.message);
+    return null;
+  }
+}
+
+// Find all copied cards for a master card
+async function findCopiedCards(masterCardId) {
+  try {
+    const lists = await trelloAPI('GET', `/boards/${BOARD_ID}/lists`);
+    const copiedCards = [];
+    
+    for (const list of lists) {
+      if (list.id === MASTER_LIST_ID) continue;
+      
+      const cards = await trelloAPI('GET', `/lists/${list.id}/cards`);
+      
+      for (const card of cards) {
+        if (card.desc && card.desc.includes(`MASTER_ID:${masterCardId}`)) {
+          copiedCards.push(card);
+        }
+      }
+    }
+    
+    return copiedCards;
+  } catch (error) {
+    console.error('Error finding copied cards:', error);
+    return [];
+  }
+}
+
+// Create a copied card in a specific list
+async function createCopiedCard(masterCard, label, targetList) {
+  try {
+    const copiedCard = await trelloAPI('POST', '/cards', {
+      name: masterCard.name,
+      desc: `${masterCard.desc || ''}\n\n[AUTO-SYNCED FROM MASTER - MASTER_ID:${masterCard.id}]`,
+      idList: targetList.id,
+      idLabels: [label.id],
+      pos: 'bottom'
+    });
+    
+    console.log(`✓ Created copy in "${label.name}" list: "${masterCard.name}"`);
+    return copiedCard;
+  } catch (error) {
+    console.error(`Error creating copied card:`, error.message);
+    return null;
+  }
+}
+
+// Update a copied card to match the master
+async function updateCopiedCard(copiedCard, masterCard) {
+  try {
+    await trelloAPI('PUT', `/cards/${copiedCard.id}`, {
+      name: masterCard.name,
+      desc: `${masterCard.desc || ''}\n\n[AUTO-SYNCED FROM MASTER - MASTER_ID:${masterCard.id}]`,
+    });
+    console.log(`✓ Updated copied card: "${masterCard.name}"`);
+  } catch (error) {
+    console.error(`Error updating copied card ${copiedCard.id}:`, error.message);
+  }
+}
+
+// Delete a copied card
+async function deleteCopiedCard(copiedCard) {
+  try {
+    await trelloAPI('DELETE', `/cards/${copiedCard.id}`);
+    console.log(`✓ Deleted copied card: "${copiedCard.name}"`);
+  } catch (error) {
+    console.error(`Error deleting copied card ${copiedCard.id}:`, error.message);
+  }
+}
+
+// Handle new card creation
+async function handleCardCreation(card) {
+  console.log(`🆕 New card created: "${card.name}"`);
+  
+  // Get full card details including labels
+  const fullCard = await trelloAPI('GET', `/cards/${card.id}?fields=all&labels=true`);
+  
+  if (!fullCard.labels || fullCard.labels.length === 0) {
+    console.log('   ⚠️  No labels found - no copies needed');
+    return;
+  }
+  
+  console.log(`   🏷️  Labels: ${fullCard.labels.map(l => l.name).join(', ')}`);
+  
+  // Create a copy for each label
+  for (const label of fullCard.labels) {
+    const targetList = await getOrCreateLabelList(label.name, label.color);
+    if (targetList) {
+      await createCopiedCard(fullCard, label, targetList);
+    }
+  }
+}
+
+// Handle card updates (including label changes)
+async function handleCardUpdate(action) {
+  const masterCard = action.data.card;
+  console.log(`📝 Master card updated: "${masterCard.name}"`);
+  
+  // Get current state of the card with labels
+  const fullCard = await trelloAPI('GET', `/cards/${masterCard.id}?fields=all&labels=true`);
+  
+  // Find all existing copied cards
+  const existingCopies = await findCopiedCards(masterCard.id);
+  console.log(`🔍 Found ${existingCopies.length} existing copied cards`);
+  
+  // Update all existing copies
+  for (const copiedCard of existingCopies) {
+    await updateCopiedCard(copiedCard, fullCard);
+  }
+  
+  // Handle label changes: create new copies for new labels
+  if (fullCard.labels && fullCard.labels.length > 0) {
+    const existingListIds = existingCopies.map(card => card.idList);
+    
+    for (const label of fullCard.labels) {
+      const targetList = await getOrCreateLabelList(label.name, label.color);
+      if (targetList && !existingListIds.includes(targetList.id)) {
+        console.log(`🆕 Creating new copy for added label: ${label.name}`);
+        await createCopiedCard(fullCard, label, targetList);
+      }
+    }
+  }
+  
+  // TODO: Handle removed labels (delete copies from lists that no longer match)
+  // This is complex because we need to track which copy belongs to which label
+}
+
+// Handle card deletion
+async function handleCardDeletion(cardId) {
+  console.log(`🗑️  Master card deleted: ${cardId}`);
+  
+  // Find and delete all copied cards
+  const copiedCards = await findCopiedCards(cardId);
+  console.log(`🔍 Found ${copiedCards.length} copied cards to delete`);
+  
+  for (const copiedCard of copiedCards) {
+    await deleteCopiedCard(copiedCard);
+  }
+}
+
+// Main webhook handler
+export default async function handler(req, res) {
   // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, HEAD, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') {
-    console.log('Responding to OPTIONS request');
     res.status(200).end();
     return;
   }
 
   if (req.method === 'GET' || req.method === 'HEAD') {
-    console.log('Responding to GET/HEAD request');
     res.status(200).json({ message: 'Webhook endpoint is running! 🔗', status: 'ready' });
     return;
   }
 
   if (req.method === 'POST') {
-    console.log('Responding to POST request');
-    res.status(200).json({ message: 'OK', received: true });
+    console.log('\n🔔 Webhook received:', JSON.stringify(req.body, null, 2));
+    
+    try {
+      // Handle Trello's webhook validation or empty requests
+      if (!req.body || !req.body.action) {
+        console.log('📝 Simple webhook test or validation - returning OK');
+        res.status(200).json({ message: 'OK' });
+        return;
+      }
+
+      const action = req.body.action;
+      
+      // Only handle actions on the master list
+      const isOnMasterList = 
+        action.data.list?.id === MASTER_LIST_ID ||
+        action.data.listAfter?.id === MASTER_LIST_ID ||
+        action.data.listBefore?.id === MASTER_LIST_ID;
+      
+      if (!isOnMasterList) {
+        console.log(`📋 Ignoring action: not on master list`);
+        res.status(200).json({ message: 'OK' });
+        return;
+      }
+      
+      // Handle different action types
+      switch (action.type) {
+        case 'createCard':
+          await handleCardCreation(action.data.card);
+          break;
+          
+        case 'updateCard':
+          await handleCardUpdate(action);
+          break;
+          
+        case 'deleteCard':
+          await handleCardDeletion(action.data.card.id);
+          break;
+          
+        default:
+          console.log(`📋 Ignoring action type: ${action.type}`);
+      }
+      
+      res.status(200).json({ message: 'OK' });
+    } catch (error) {
+      console.error('Webhook handler error:', error);
+      res.status(200).json({ message: 'OK' }); // Always return 200 to Trello
+    }
     return;
   }
 
-  // If we get here, it's an unsupported method
-  console.log('Unsupported method:', req.method);
+  // Unsupported method
   res.status(405).json({ error: 'Method not allowed', method: req.method });
 }
