@@ -45,6 +45,30 @@ async function trelloAPI(method, endpoint, data = null) {
   }
 }
 
+// Simple request deduplication to prevent race conditions
+const recentActions = new Map(); // actionId -> timestamp
+const ACTION_DEDUP_WINDOW = 10000; // 10 seconds
+
+function isRecentAction(actionId) {
+  const now = Date.now();
+  
+  // Clean up old actions
+  for (const [id, timestamp] of recentActions.entries()) {
+    if (now - timestamp > ACTION_DEDUP_WINDOW) {
+      recentActions.delete(id);
+    }
+  }
+  
+  // Check if this action was recently processed
+  if (recentActions.has(actionId)) {
+    return true;
+  }
+  
+  // Mark this action as processed
+  recentActions.set(actionId, now);
+  return false;
+}
+
 // Cache for lists to avoid repeated API calls
 let listsCache = null;
 let listsCacheTime = 0;
