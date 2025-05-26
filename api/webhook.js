@@ -1,12 +1,10 @@
 // No axios import needed - using built-in fetch
-import crypto from 'crypto';
 
 // Configuration
 const API_KEY = process.env.TRELLO_API_KEY;
 const TOKEN = process.env.TRELLO_TOKEN;
-const WEBHOOK_SECRET = process.env.TRELLO_WEBHOOK_SECRET;
-const MASTER_LIST_ID = process.env.TRELLO_MASTER_LIST_ID || '682f02d46425bad11c50c904';
-const BOARD_ID = process.env.TRELLO_BOARD_ID || '681e4e49575a69d0215447fd';
+const MASTER_LIST_ID = '682f02d46425bad11c50c904';
+const BOARD_ID = '681e4e49575a69d0215447fd';
 
 // Trello API helper with rate limiting
 async function trelloAPI(method, endpoint, data = null) {
@@ -274,6 +272,71 @@ async function handleCardUpdate(action) {
   }
 }
 
+// Handle label added to card
+async function handleLabelAdded(action) {
+  const card = action.data.card;
+  const label = action.data.label;
+  
+  console.log(`🏷️  Label "${label.name}" added to card: "${card.name}"`);
+  
+  // Get or create the target list for this label
+  const targetList = await getOrCreateLabelList(label.name, label.color);
+  if (!targetList) {
+    console.log(`❌ Could not create/find list for label: ${label.name}`);
+    return;
+  }
+  
+  // Check if a copy already exists in this list
+  const existingCardsInList = await trelloAPI('GET', `/lists/${targetList.id}/cards`);
+  const alreadyExists = existingCardsInList.some(existingCard => 
+    existingCard.desc && existingCard.desc.includes(`MASTER_ID:${card.id}`)
+  );
+  
+  if (alreadyExists) {
+    console.log(`✅ Copy already exists in "${label.name}" list - no action needed`);
+    return;
+  }
+  
+  // Get full card details to create the copy
+  const fullCard = await trelloAPI('GET', `/cards/${card.id}?fields=all&labels=true`);
+  
+  // Create the new copy
+  await createCopiedCard(fullCard, label, targetList);
+}
+
+// Handle label removed from card
+async function handleLabelRemoved(action) {
+  const card = action.data.card;
+  const label = action.data.label;
+  
+  console.log(`🗑️  Label "${label.name}" removed from card: "${card.name}"`);
+  
+  // Find the list for this label
+  const now = Date.now();
+  if (!listsCache || (now - listsCacheTime) > CACHE_DURATION) {
+    listsCache = await trelloAPI('GET', `/boards/${BOARD_ID}/lists`);
+    listsCacheTime = now;
+  }
+  
+  const targetList = listsCache.find(list => list.name === label.name);
+  if (!targetList) {
+    console.log(`⚠️  No list found for label: ${label.name}`);
+    return;
+  }
+  
+  // Find and delete the copy in this specific list
+  const cardsInList = await trelloAPI('GET', `/lists/${targetList.id}/cards`);
+  const copyToDelete = cardsInList.find(existingCard => 
+    existingCard.desc && existingCard.desc.includes(`MASTER_ID:${card.id}`)
+  );
+  
+  if (copyToDelete) {
+    await deleteCopiedCard(copyToDelete);
+  } else {
+    console.log(`⚠️  No copy found to delete in "${label.name}" list`);
+  }
+}
+
 // Handle card deletion
 async function handleCardDeletion(cardId) {
   console.log(`🗑️  Master card deleted: ${cardId}`);
@@ -287,59 +350,12 @@ async function handleCardDeletion(cardId) {
   }
 }
 
-// Verify webhook signature
-function verifyWebhookSignature(payload, signature) {
-  if (!WEBHOOK_SECRET) {
-    console.warn('⚠️  WEBHOOK_SECRET not configured - skipping signature verification');
-    return true; // Allow for backwards compatibility
-  }
-  
-  if (!signature) {
-    console.error('❌ No signature provided in webhook request');
-    return false;
-  }
-  
-  const expectedSignature = crypto
-    .createHmac('sha1', WEBHOOK_SECRET)
-    .update(payload, 'utf8')
-    .digest('base64');
-  
-  return crypto.timingSafeEqual(
-    Buffer.from(signature),
-    Buffer.from(expectedSignature)
-  );
-}
-
-// Validate webhook payload structure
-function validateWebhookPayload(body) {
-  if (!body || typeof body !== 'object') {
-    return false;
-  }
-  
-  // Allow empty bodies for webhook validation
-  if (Object.keys(body).length === 0) {
-    return true;
-  }
-  
-  // Require action object for actual webhook events
-  if (!body.action || typeof body.action !== 'object') {
-    return false;
-  }
-  
-  return true;
-}
-
 // Main webhook handler
 export default async function handler(req, res) {
-  // Security headers
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
-  
-  // Enable CORS for specific methods only
+  // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, HEAD, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Trello-Webhook');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') {
     res.status(200).end();
@@ -352,31 +368,6 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'POST') {
-    // Verify content length to prevent large payloads
-    const contentLength = parseInt(req.headers['content-length'] || '0');
-    if (contentLength > 1024 * 1024) { // 1MB limit
-      console.error('❌ Payload too large:', contentLength);
-      res.status(413).json({ error: 'Payload too large' });
-      return;
-    }
-    
-    // Verify webhook signature if secret is configured
-    const signature = req.headers['x-trello-webhook'];
-    const rawBody = JSON.stringify(req.body);
-    
-    if (!verifyWebhookSignature(rawBody, signature)) {
-      console.error('❌ Invalid webhook signature');
-      res.status(401).json({ error: 'Unauthorized' });
-      return;
-    }
-    
-    // Validate payload structure
-    if (!validateWebhookPayload(req.body)) {
-      console.error('❌ Invalid webhook payload structure');
-      res.status(400).json({ error: 'Invalid payload' });
-      return;
-    }
-    
     console.log('\n🔔 Webhook received:', JSON.stringify(req.body, null, 2));
     
     try {
@@ -411,6 +402,14 @@ export default async function handler(req, res) {
           
         case 'updateCard':
           await handleCardUpdate(action);
+          break;
+          
+        case 'addLabelToCard':
+          await handleLabelAdded(action);
+          break;
+          
+        case 'removeLabelFromCard':
+          await handleLabelRemoved(action);
           break;
           
         case 'deleteCard':
