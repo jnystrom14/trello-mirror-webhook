@@ -6,7 +6,7 @@ const TOKEN = process.env.TRELLO_TOKEN;
 const MASTER_LIST_ID = '682f02d46425bad11c50c904';
 const BOARD_ID = '681e4e49575a69d0215447fd';
 
-// Trello API helper using built-in fetch
+// Trello API helper with rate limiting
 async function trelloAPI(method, endpoint, data = null) {
   const separator = endpoint.includes('?') ? '&' : '?';
   const url = `https://api.trello.com/1${endpoint}${separator}key=${API_KEY}&token=${TOKEN}`;
@@ -25,9 +25,18 @@ async function trelloAPI(method, endpoint, data = null) {
     
     const response = await fetch(url, options);
     
+    if (response.status === 429) {
+      console.log('⏳ Rate limit hit - waiting 1 second...');
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      return trelloAPI(method, endpoint, data); // Retry once
+    }
+    
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${await response.text()}`);
     }
+    
+    // Add small delay between API calls to avoid rate limiting
+    await new Promise(resolve => setTimeout(resolve, 100));
     
     return await response.json();
   } catch (error) {
@@ -36,11 +45,22 @@ async function trelloAPI(method, endpoint, data = null) {
   }
 }
 
-// Get or create a list for a specific label
+// Cache for lists to avoid repeated API calls
+let listsCache = null;
+let listsCacheTime = 0;
+const CACHE_DURATION = 30000; // 30 seconds
+
+// Get or create a list for a specific label (with caching)
 async function getOrCreateLabelList(labelName, labelColor) {
   try {
-    const lists = await trelloAPI('GET', `/boards/${BOARD_ID}/lists`);
-    const existingList = lists.find(list => list.name === labelName);
+    // Use cached lists if recent
+    const now = Date.now();
+    if (!listsCache || (now - listsCacheTime) > CACHE_DURATION) {
+      listsCache = await trelloAPI('GET', `/boards/${BOARD_ID}/lists`);
+      listsCacheTime = now;
+    }
+    
+    const existingList = listsCache.find(list => list.name === labelName);
     if (existingList) {
       return existingList;
     }
@@ -51,6 +71,9 @@ async function getOrCreateLabelList(labelName, labelColor) {
       pos: 'bottom'
     });
     
+    // Update cache with new list
+    listsCache.push(newList);
+    
     console.log(`✨ Created new list: "${labelName}"`);
     return newList;
   } catch (error) {
@@ -59,13 +82,19 @@ async function getOrCreateLabelList(labelName, labelColor) {
   }
 }
 
-// Find all copied cards for a master card
+// Find all copied cards for a master card (optimized)
 async function findCopiedCards(masterCardId) {
   try {
-    const lists = await trelloAPI('GET', `/boards/${BOARD_ID}/lists`);
+    // Use cached lists
+    const now = Date.now();
+    if (!listsCache || (now - listsCacheTime) > CACHE_DURATION) {
+      listsCache = await trelloAPI('GET', `/boards/${BOARD_ID}/lists`);
+      listsCacheTime = now;
+    }
+    
     const copiedCards = [];
     
-    for (const list of lists) {
+    for (const list of listsCache) {
       if (list.id === MASTER_LIST_ID) continue;
       
       const cards = await trelloAPI('GET', `/lists/${list.id}/cards`);
