@@ -79,9 +79,23 @@ export default async function handler(req, res) {
     return;
   }
 
+  // Basic validation
+  if (!API_KEY || !TOKEN) {
+    console.error('Missing environment variables');
+    res.status(500).json({ error: 'Server configuration error' });
+    return;
+  }
+
   console.log('\n🔔 Webhook received:', JSON.stringify(req.body, null, 2));
   
   try {
+    // Handle Trello's webhook validation
+    if (!req.body || !req.body.action) {
+      console.log('📝 Simple webhook test or validation - returning OK');
+      res.status(200).json({ message: 'OK' });
+      return;
+    }
+
     const action = req.body.action;
     
     // Only handle card updates in the master list
@@ -106,6 +120,6 @@ export default async function handler(req, res) {
     res.status(200).json({ message: 'OK' });
   } catch (error) {
     console.error('Webhook handler error:', error);
-    res.status(500).json({ error: 'Error processing webhook' });
+    res.status(200).json({ message: 'OK' }); // Always return 200 to Trello to avoid retries
   }
 }
