@@ -1,4 +1,4 @@
-import axios from 'axios';
+// No axios import needed - using built-in fetch
 
 // Configuration
 const API_KEY = process.env.TRELLO_API_KEY;
@@ -6,15 +6,32 @@ const TOKEN = process.env.TRELLO_TOKEN;
 const MASTER_LIST_ID = '682f02d46425bad11c50c904';
 const BOARD_ID = '681e4e49575a69d0215447fd';
 
-// Trello API helper
+// Trello API helper using built-in fetch
 async function trelloAPI(method, endpoint, data = null) {
   const separator = endpoint.includes('?') ? '&' : '?';
   const url = `https://api.trello.com/1${endpoint}${separator}key=${API_KEY}&token=${TOKEN}`;
+  
   try {
-    const response = await axios({ method, url, data });
-    return response.data;
+    const options = {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+      }
+    };
+    
+    if (data) {
+      options.body = JSON.stringify(data);
+    }
+    
+    const response = await fetch(url, options);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
+    
+    return await response.json();
   } catch (error) {
-    console.error(`Trello API error: ${error.response?.status} - ${error.response?.data}`);
+    console.error(`Trello API error:`, error.message);
     throw error;
   }
 }
