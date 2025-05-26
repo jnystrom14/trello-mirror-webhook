@@ -46,26 +46,27 @@ async function trelloAPI(method, endpoint, data = null) {
 }
 
 // Simple request deduplication to prevent race conditions
-const recentActions = new Map(); // actionId -> timestamp
-const ACTION_DEDUP_WINDOW = 10000; // 10 seconds
+const recentCardOperations = new Map(); // "cardId:listId" -> timestamp
+const CARD_DEDUP_WINDOW = 30000; // 30 seconds
 
-function isRecentAction(actionId) {
+function isRecentCardOperation(cardId, listId, operation) {
   const now = Date.now();
+  const key = `${cardId}:${listId}:${operation}`;
   
-  // Clean up old actions
-  for (const [id, timestamp] of recentActions.entries()) {
-    if (now - timestamp > ACTION_DEDUP_WINDOW) {
-      recentActions.delete(id);
+  // Clean up old operations
+  for (const [opKey, timestamp] of recentCardOperations.entries()) {
+    if (now - timestamp > CARD_DEDUP_WINDOW) {
+      recentCardOperations.delete(opKey);
     }
   }
   
-  // Check if this action was recently processed
-  if (recentActions.has(actionId)) {
+  // Check if this card operation was recently processed
+  if (recentCardOperations.has(key)) {
     return true;
   }
   
-  // Mark this action as processed
-  recentActions.set(actionId, now);
+  // Mark this operation as processed
+  recentCardOperations.set(key, now);
   return false;
 }
 
@@ -140,6 +141,12 @@ async function findCopiedCards(masterCardId) {
 // Create a copied card in a specific list
 async function createCopiedCard(masterCard, label, targetList) {
   try {
+    // DEDUPLICATION: Check if we recently created a copy of this card in this list
+    if (isRecentCardOperation(masterCard.id, targetList.id, 'create')) {
+      console.log(`🔄 RECENT CARD OPERATION DETECTED: Skipping creation of "${masterCard.name}" in "${targetList.name}"`);
+      return null;
+    }
+    
     console.log(`🔨 ATTEMPTING TO CREATE COPY:`);
     console.log(`   Master Card: "${masterCard.name}" (${masterCard.id})`);
     console.log(`   Target List: "${targetList.name}" (${targetList.id})`);
