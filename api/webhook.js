@@ -128,7 +128,14 @@ async function deleteCopiedCard(copiedCard) {
 
 // Handle new card creation
 async function handleCardCreation(card) {
-  console.log(`🆕 New card created: "${card.name}"`);
+  console.log(`🆕 New card created: "${card.name}" (ID: ${card.id})`);
+  
+  // Check if we already have copies of this card to avoid duplicates
+  const existingCopies = await findCopiedCards(card.id);
+  if (existingCopies.length > 0) {
+    console.log(`⚠️  Card "${card.name}" already has ${existingCopies.length} copies - skipping creation`);
+    return;
+  }
   
   // Get full card details including labels
   const fullCard = await trelloAPI('GET', `/cards/${card.id}?fields=all&labels=true`);
@@ -239,6 +246,8 @@ export default async function handler(req, res) {
       }
       
       // Handle different action types
+      console.log(`🎯 Processing action: ${action.type} for card: ${action.data.card?.name || 'unknown'}`);
+      
       switch (action.type) {
         case 'createCard':
           await handleCardCreation(action.data.card);
