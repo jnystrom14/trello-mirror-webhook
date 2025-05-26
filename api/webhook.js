@@ -11,7 +11,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'GET') {
-    res.status(200).json({ message: 'Webhook endpoint is running! 🔗' });
+    res.status(200).json({ message: 'Webhook endpoint is running! 🔗', status: 'ready' });
     return;
   }
 
