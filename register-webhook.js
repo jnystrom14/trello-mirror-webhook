@@ -3,13 +3,17 @@ const axios = require('axios');
 
 const API_KEY = process.env.TRELLO_API_KEY;
 const TOKEN = process.env.TRELLO_TOKEN;
-const BOARD_ID = '681e4e49575a69d0215447fd';
+const BOARD_ID = process.env.TRELLO_BOARD_ID;
 
 // Your Vercel webhook URL
 const WEBHOOK_URL = 'https://trello-mirror-webhook.vercel.app/api/webhook';
 
 async function registerWebhook() {
   try {
+    if (!BOARD_ID) {
+      throw new Error('TRELLO_BOARD_ID environment variable is required');
+    }
+    
     console.log('🔗 Registering webhook with Trello...');
     console.log(`📋 Board ID: ${BOARD_ID}`);
     console.log(`🌐 Webhook URL: ${WEBHOOK_URL}`);

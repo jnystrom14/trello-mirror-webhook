@@ -1,10 +1,12 @@
 // No axios import needed - using built-in fetch
+import crypto from 'crypto';
 
 // Configuration
 const API_KEY = process.env.TRELLO_API_KEY;
 const TOKEN = process.env.TRELLO_TOKEN;
-const MASTER_LIST_ID = '682f02d46425bad11c50c904';
-const BOARD_ID = '681e4e49575a69d0215447fd';
+const WEBHOOK_SECRET = process.env.TRELLO_WEBHOOK_SECRET;
+const MASTER_LIST_ID = process.env.TRELLO_MASTER_LIST_ID || '682f02d46425bad11c50c904';
+const BOARD_ID = process.env.TRELLO_BOARD_ID || '681e4e49575a69d0215447fd';
 
 // Trello API helper with rate limiting
 async function trelloAPI(method, endpoint, data = null) {
@@ -285,12 +287,59 @@ async function handleCardDeletion(cardId) {
   }
 }
 
+// Verify webhook signature
+function verifyWebhookSignature(payload, signature) {
+  if (!WEBHOOK_SECRET) {
+    console.warn('⚠️  WEBHOOK_SECRET not configured - skipping signature verification');
+    return true; // Allow for backwards compatibility
+  }
+  
+  if (!signature) {
+    console.error('❌ No signature provided in webhook request');
+    return false;
+  }
+  
+  const expectedSignature = crypto
+    .createHmac('sha1', WEBHOOK_SECRET)
+    .update(payload, 'utf8')
+    .digest('base64');
+  
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expectedSignature)
+  );
+}
+
+// Validate webhook payload structure
+function validateWebhookPayload(body) {
+  if (!body || typeof body !== 'object') {
+    return false;
+  }
+  
+  // Allow empty bodies for webhook validation
+  if (Object.keys(body).length === 0) {
+    return true;
+  }
+  
+  // Require action object for actual webhook events
+  if (!body.action || typeof body.action !== 'object') {
+    return false;
+  }
+  
+  return true;
+}
+
 // Main webhook handler
 export default async function handler(req, res) {
-  // Enable CORS
+  // Security headers
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  
+  // Enable CORS for specific methods only
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, HEAD, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Trello-Webhook');
 
   if (req.method === 'OPTIONS') {
     res.status(200).end();
@@ -303,6 +352,31 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'POST') {
+    // Verify content length to prevent large payloads
+    const contentLength = parseInt(req.headers['content-length'] || '0');
+    if (contentLength > 1024 * 1024) { // 1MB limit
+      console.error('❌ Payload too large:', contentLength);
+      res.status(413).json({ error: 'Payload too large' });
+      return;
+    }
+    
+    // Verify webhook signature if secret is configured
+    const signature = req.headers['x-trello-webhook'];
+    const rawBody = JSON.stringify(req.body);
+    
+    if (!verifyWebhookSignature(rawBody, signature)) {
+      console.error('❌ Invalid webhook signature');
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    
+    // Validate payload structure
+    if (!validateWebhookPayload(req.body)) {
+      console.error('❌ Invalid webhook payload structure');
+      res.status(400).json({ error: 'Invalid payload' });
+      return;
+    }
+    
     console.log('\n🔔 Webhook received:', JSON.stringify(req.body, null, 2));
     
     try {
